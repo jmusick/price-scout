@@ -23,6 +23,7 @@ HISTORY = os.path.join(MODSDATA, "pricescout_history.json")
 BC = os.path.join(MODSDATA, "bettercontainers_vendorprices.json")
 FEED = os.path.join(MODSDATA, "pricescout_bcfeed.json")
 FEED_MIN_VENDORS = 2
+REMOVED = -1  # written by market-price mode for a price it took out
 DAYS = 30
 BC_MAX_PRICE = 40000
 
@@ -40,7 +41,8 @@ def preview():
     record = load(FEED, {"written": {}})
     written = record["written"]
     if record.get("marketMode"):
-        print("Market-price mode is ON in game: every remembered price is set to market (0 = no data).")
+        print("Market-price mode is ON in game: every remembered price is set to market, or to the")
+        print("item value plus noMarketMarkupPercent (30% by default) when fewer than 2 vendors had the item.")
         print(f"{len(record.get('originals', {}))} of your own prices are saved and come back when it is switched off.")
         return
     cutoff = time.time() - DAYS * DAY
@@ -79,12 +81,15 @@ def remove():
     removed = restored = 0
     originals = record.get("originals", {})
     for key, value in record["written"].items():
-        if doc["prices"].get(key) != value:
+        current = doc["prices"].get(key)
+        # REMOVED: market-price mode took the price out; it is ours while still absent.
+        ours = current is None if value == REMOVED else current == value
+        if not ours:
             continue  # changed since PriceScout wrote it: leave it
         if key in originals:
             doc["prices"][key] = originals[key]  # your price, replaced by market-price mode
             restored += 1
-        else:
+        elif current is not None:
             del doc["prices"][key]
             removed += 1
     with open(BC, "w", encoding="utf-8") as f:

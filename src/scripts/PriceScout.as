@@ -22,10 +22,14 @@ package
    //   pricescout_diag.json     what the providers sent, for working out the data shape
    public class PriceScout extends MovieClip
    {
-      public static const BUILD:String = "0.8.0-test";
+      public static const BUILD:String = "0.9.1";
 
       private static const HISTORY_STORE:String = "pricescout_history";
       private static const DIAG_STORE:String = "pricescout_diag";
+      private static const SETTINGS_STORE:String = "pricescout_settings";
+      // Market-price mode prices an item with no market price at its item value plus this
+      // percentage, unless pricescout_settings.json says otherwise.
+      private static const DEFAULT_NO_MARKET_MARKUP:Number = 30;
 
       // Better Containers' remembered sale prices: name|level|stars -> price. Its Sale
       // Planner pre-fills a remembered price when you list an item. PriceScout adds its
@@ -36,6 +40,8 @@ package
       private static const FEED_MIN_VENDORS:int = 2;
       private static const BC_MAX_PRICE:int = 40000;
       private static const BC_REREAD_MS:int = 2000;
+      // Recorded in feedWritten for a key whose remembered price market-price mode removed.
+      private static const REMOVED:int = -1;
 
       // Market-price mode hotkey (F10) and Better Containers' Vendor manager key (M), as
       // Windows virtual-key codes for xScal's Input.RegisterKey / IsKeyPressed.
@@ -80,6 +86,11 @@ package
 
       // Suggestion rules, the same as tools/report.py.
       private static const SUGGEST_DAYS:Number = 30;
+      // Characters quote() must escape in JSON: quote, backslash and control characters.
+      private static const NEEDS_ESCAPE:RegExp = /["\\\x00-\x1f]/;
+
+      // History older than this is dropped at login.
+      private static const HISTORY_KEEP_DAYS:Number = 60;
       private static const PLACEHOLDER_PRICE:Number = 40000;
       // The selling price is this quantile of vendors' prices (the lower quartile): asking
       // prices lean high, since cheap listings sell and expensive ones stay up.
@@ -123,6 +134,7 @@ package
 
       private var history:Object = {};
       private var historyLoaded:Boolean = false;
+      private var historySaveBlocked:Boolean = false;
       private var historyDirty:Boolean = false;
       private var diagDirty:Boolean = false;
       private var saveTimer:Timer;
@@ -142,8 +154,9 @@ package
       private var dealsLine:Array;
       private var bcPrices:Object;
       private var bcPricesAt:int = 0;
+      private var bcText:String;
       private var feedOriginals:Object = {};
-      private var ownedKeys:Object = {};
+      private var ownedValues:Object = {};
       private var marketMode:Boolean = false;
       private var keysRegistered:Boolean = false;
       private var modeKeyDown:Boolean = false;
@@ -161,12 +174,16 @@ package
       private var panelBox:Shape;
       private var panelFields:Array = [];
       private var diag:Object;
+      private var fullDiagnostics:Boolean = false;
+      private var noMarketMarkup:Number = DEFAULT_NO_MARKET_MARKUP;
+      private var diagMustSave:Boolean = false;
       private var status:TextField;
       private var statusFormat:TextFormat;
       private var statusBox:Shape;
 
       private var jsonText:String;
       private var jsonPos:int;
+      private var jsonBackslash:int = -1;
 
       public function PriceScout()
       {
@@ -235,6 +252,67 @@ package
          this.updateStatus();
       }
 
+      // ---- Settings ---------------------------------------------------------------------
+
+      // Data\modsdata\pricescout_settings.json, created or completed with the defaults:
+      //   "diagnostics": true writes the full diagnostics file (event log, data samples,
+      //   legendary item cards, the last vendor's name) instead of a short summary.
+      //   "noMarketMarkupPercent": in market-price mode, an item with no market price is
+      //   priced at its item value plus this percentage (default 30).
+      private function loadSettings() : void
+      {
+         var stored:* = undefined;
+         var parsed:Object = null;
+         var complete:Boolean = false;
+         try
+         {
+            stored = this.codeObj.modStorage.load(SETTINGS_STORE);
+            if(stored !== false)
+            {
+               parsed = this.parseJson(String(stored)) as Object;
+            }
+            complete = parsed != null && parsed.diagnostics !== undefined && parsed.noMarketMarkupPercent !== undefined;
+            if(parsed != null)
+            {
+               this.fullDiagnostics = parsed.diagnostics == true;
+               if(parsed.noMarketMarkupPercent !== undefined && !isNaN(Number(parsed.noMarketMarkupPercent)) && Number(parsed.noMarketMarkupPercent) >= 0)
+               {
+                  this.noMarketMarkup = Number(parsed.noMarketMarkupPercent);
+               }
+            }
+            // Write the file back with every setting, so missing ones appear with defaults.
+            if(!complete)
+            {
+               this.codeObj.modStorage.save(SETTINGS_STORE,"{\"version\":1,\"diagnostics\":" + (this.fullDiagnostics ? "true" : "false") + ",\"noMarketMarkupPercent\":" + this.noMarketMarkup + "}");
+            }
+         }
+         catch(error:Error)
+         {
+            this.addError("settings: " + error.message);
+         }
+         this.diag.diagnostics = this.fullDiagnostics ? "full" : "summary (set \"diagnostics\": true in " + SETTINGS_STORE + ".json for full)";
+         this.diagMustSave = true;
+      }
+
+      private function diagSummary() : Object
+      {
+         return {
+            "build":this.diag.build,
+            "diagnostics":this.diag.diagnostics,
+            "startedAt":this.diag.startedAt,
+            "savedAt":this.diag.savedAt,
+            "hudMenu":this.diag.hudMenu,
+            "dataManager":this.diag.dataManager,
+            "codeObject":this.diag.codeObject,
+            "historyLoad":this.diag.historyLoad,
+            "subscribe":this.diag.subscribe,
+            "hotkey":this.diag.hotkey,
+            "feed":this.diag.feed,
+            "recorded":this.diag.recorded,
+            "errors":this.diag.errors
+         };
+      }
+
       // ---- xScal storage ------------------------------------------------------------
 
       private function waitForCodeObject(e:Event) : void
@@ -256,6 +334,7 @@ package
          {
             removeEventListener(Event.ENTER_FRAME,this.waitForCodeObject);
             this.diag.codeObject = "ok after " + this.waitFrames + " frames";
+            this.loadSettings();
             this.loadHistory();
             addEventListener(Event.ENTER_FRAME,this.pollKeys);
             this.diagDirty = true;
@@ -288,21 +367,71 @@ package
                if(parsed != null && parsed.items != null)
                {
                   this.mergeLoaded(parsed.items);
-                  this.diag.historyLoad = "ok";
+                  this.diag.historyLoad = "ok, " + this.pruneHistory() + " entries older than " + HISTORY_KEEP_DAYS + " days dropped";
                }
                else
                {
                   this.diag.historyLoad = "file has no items object";
+                  this.historySaveBlocked = true;
                }
             }
          }
          catch(error:Error)
          {
             this.diag.historyLoad = "error: " + error.message;
+            this.historySaveBlocked = true;
+         }
+         // A file that exists but cannot be read is never overwritten: saving would replace
+         // all its history with this session's prices.
+         if(this.historySaveBlocked)
+         {
+            this.addError(HISTORY_STORE + ".json could not be read, so it will not be saved this session");
          }
          this.historyLoaded = true;
          this.loadFeedRecord();
          this.feedPending = true;
+      }
+
+      // Drops entries older than HISTORY_KEEP_DAYS (suggestions only use SUGGEST_DAYS), and
+      // items left with none, so the file stops growing. Returns how many were dropped.
+      private function pruneHistory() : int
+      {
+         var cutoff:Number = nowSeconds() - HISTORY_KEEP_DAYS * DAY_SECONDS;
+         var keys:Array = [];
+         var key:String = null;
+         var kept:Array = null;
+         var entry:Array = null;
+         var dropped:int = 0;
+         for(key in this.history)
+         {
+            keys.push(key);
+         }
+         for each(key in keys)
+         {
+            kept = [];
+            for each(entry in this.history[key])
+            {
+               if(Number(entry[0]) >= cutoff)
+               {
+                  kept.push(entry);
+               }
+            }
+            dropped += (this.history[key] as Array).length - kept.length;
+            if(kept.length == 0)
+            {
+               delete this.history[key];
+            }
+            else
+            {
+               this.history[key] = kept;
+            }
+         }
+         if(dropped > 0)
+         {
+            this.historyDirty = true;
+            this.historyVersion++;
+         }
+         return dropped;
       }
 
       // ---- Better Containers feed -------------------------------------------------------
@@ -327,9 +456,11 @@ package
                   {
                      this.feedOriginals = parsed.originals;
                   }
-                  if(parsed.owned != null)
+                  // ownedValues: key -> item value. (Older records kept keys only, as
+                  // "owned"; those are dropped and rebuilt at your machine.)
+                  if(parsed.ownedValues != null)
                   {
-                     this.ownedKeys = parsed.owned;
+                     this.ownedValues = parsed.ownedValues;
                   }
                   this.marketMode = parsed.marketMode == true;
                }
@@ -343,7 +474,7 @@ package
 
       private function saveFeedRecord() : void
       {
-         this.codeObj.modStorage.save(FEED_STORE,"{\"version\":2,\"marketMode\":" + (this.marketMode ? "true" : "false") + ",\"written\":" + encode(this.feedWritten) + ",\"originals\":" + encode(this.feedOriginals) + ",\"owned\":" + encode(this.ownedKeys) + "}");
+         this.codeObj.modStorage.save(FEED_STORE,"{\"version\":2,\"marketMode\":" + (this.marketMode ? "true" : "false") + ",\"written\":" + encode(this.feedWritten) + ",\"originals\":" + encode(this.feedOriginals) + ",\"ownedValues\":" + encode(this.ownedValues) + "}");
       }
 
       // Market value of an item key, as the panel shows it, or NaN when no vendor had it.
@@ -420,7 +551,7 @@ package
          }
          for each(key in keys)
          {
-            if(this.feedWritten[key] !== undefined && Number(prices[key]) == Number(this.feedWritten[key]))
+            if(this.isOurs(key,prices[key]))
             {
                prices[key] = this.feedOriginals[key];
                counts.restored++;
@@ -438,7 +569,7 @@ package
          {
             if(this.normalFeedPrice(key) < 0)
             {
-               if(Number(prices[key]) == Number(this.feedWritten[key]))
+               if(Number(this.feedWritten[key]) != REMOVED && this.isOurs(key,prices[key]))
                {
                   delete prices[key];
                   counts.removed++;
@@ -505,26 +636,43 @@ package
          var market:Number = NaN;
          var price:int = 0;
          var current:* = undefined;
+         var ours:Boolean = false;
          var counts:Object = {
             "changed":0,
             "atMarket":0,
-            "atZero":0,
+            "atItemValue":0,
+            "removed":0,
             "yoursReplaced":0
          };
          for(key in prices)
          {
             keys[key] = true;
          }
-         for(key in this.ownedKeys)
+         for(key in this.ownedValues)
          {
             keys[key] = true;
          }
          for(key in keys)
          {
             market = this.marketPrice(key);
-            price = isNaN(market) ? 0 : int(Math.max(0,Math.min(BC_MAX_PRICE,Math.round(market))));
+            // No market price: the item value (known for items seen at your machine), or
+            // no remembered price at all (REMOVED), so Better Containers uses the item
+            // value itself. Never 0: "Sell checked" would list those items for free.
+            if(!isNaN(market))
+            {
+               price = int(Math.max(1,Math.min(BC_MAX_PRICE,Math.round(market))));
+            }
+            else if(this.ownedValues[key] !== undefined && Number(this.ownedValues[key]) > 0)
+            {
+               price = this.noMarketPrice(Number(this.ownedValues[key]));
+            }
+            else
+            {
+               price = REMOVED;
+            }
             current = prices[key];
-            if(current !== undefined && current !== null && !(this.feedWritten[key] !== undefined && Number(current) == Number(this.feedWritten[key])))
+            ours = this.isOurs(key,current);
+            if(current !== undefined && current !== null && !ours)
             {
                // Your price: kept to put back when the mode is switched off.
                if(this.feedOriginals[key] === undefined)
@@ -533,22 +681,60 @@ package
                }
                counts.yoursReplaced++;
             }
-            if(current === undefined || current === null || Number(current) != price)
+            if(price == REMOVED)
             {
-               prices[key] = price;
-               counts.changed++;
-            }
-            this.feedWritten[key] = price;
-            if(price == 0)
-            {
-               counts.atZero++;
+               if(current !== undefined && current !== null)
+               {
+                  delete prices[key];
+                  counts.changed++;
+               }
+               counts.removed++;
             }
             else
             {
-               counts.atMarket++;
+               if(current === undefined || current === null || Number(current) != price)
+               {
+                  prices[key] = price;
+                  counts.changed++;
+               }
+               if(isNaN(market))
+               {
+                  counts.atItemValue++;
+               }
+               else
+               {
+                  counts.atMarket++;
+               }
             }
+            this.feedWritten[key] = price;
          }
          return counts;
+      }
+
+      // Item value plus the no-market markup, rounded, at least 1.
+      private function noMarketPrice(itemValue:Number) : int
+      {
+         return int(Math.max(1,Math.min(BC_MAX_PRICE,Math.round(itemValue * (1 + this.noMarketMarkup / 100)))));
+      }
+
+      private function markupText() : String
+      {
+         return this.noMarketMarkup > 0 ? "item value +" + this.noMarketMarkup + "%" : "item value";
+      }
+
+      // True when Better Containers' value for key is what PriceScout last wrote (or
+      // removed), so it is PriceScout's to change.
+      private function isOurs(key:String, current:*) : Boolean
+      {
+         if(this.feedWritten[key] === undefined)
+         {
+            return false;
+         }
+         if(Number(this.feedWritten[key]) == REMOVED)
+         {
+            return current === undefined || current === null;
+         }
+         return current !== undefined && current !== null && Number(current) == Number(this.feedWritten[key]);
       }
 
       // Every item you have at your own machine (carried and in the machine's stash list),
@@ -581,9 +767,9 @@ package
                   continue;
                }
                key = itemKey(entry);
-               if(this.ownedKeys[key] == null)
+               if(this.ownedValues[key] === undefined || Number(this.ownedValues[key]) != Number(entry.itemValue))
                {
-                  this.ownedKeys[key] = 1;
+                  this.ownedValues[key] = Number(entry.itemValue);
                   added++;
                }
             }
@@ -691,7 +877,7 @@ package
          }
          try
          {
-            if(this.historyDirty && this.historyLoaded)
+            if(this.historyDirty && this.historyLoaded && !this.historySaveBlocked)
             {
                this.historyDirty = false;
                if(this.codeObj.modStorage.save(HISTORY_STORE,this.encodeHistory()) != true)
@@ -704,11 +890,14 @@ package
                this.feedPending = false;
                this.feedBetterContainers();
             }
-            if(this.diagDirty)
+            // Full diagnostics: everything, whenever it changes. Otherwise a short summary
+            // with no vendor names, written at login and when an error is added.
+            if(this.diagDirty && (this.fullDiagnostics || this.diagMustSave))
             {
                this.diagDirty = false;
+               this.diagMustSave = false;
                this.diag.savedAt = nowSeconds();
-               if(this.codeObj.modStorage.save(DIAG_STORE,encode(this.diag)) != true)
+               if(this.codeObj.modStorage.save(DIAG_STORE,encode(this.fullDiagnostics ? this.diag : this.diagSummary())) != true)
                {
                   this.addError("modStorage.save(" + DIAG_STORE + ") returned false");
                }
@@ -916,7 +1105,12 @@ package
       private function logEvent(text:String) : void
       {
          var log:Array = this.diag.eventLog as Array;
-         var time:Date = new Date();
+         var time:Date = null;
+         if(!this.fullDiagnostics)
+         {
+            return;
+         }
+         time = new Date();
          log.push(pad2(time.hours) + ":" + pad2(time.minutes) + ":" + pad2(time.seconds) + " " + text);
          if(log.length > MAX_LOG)
          {
@@ -1201,6 +1395,10 @@ package
       {
          var samples:Array = this.diag.legendaryCards as Array;
          var sample:Object = null;
+         if(!this.fullDiagnostics)
+         {
+            return;
+         }
          var rows:Array = [];
          var row:Object = null;
          if(samples == null)
@@ -1295,10 +1493,17 @@ package
             if(stored === false)
             {
                this.bcPrices = {};
+               this.bcText = null;
+               return;
+            }
+            // Parsing is the slow part; skip it when the file has not changed.
+            if(this.bcPrices != null && String(stored) == this.bcText)
+            {
                return;
             }
             doc = this.parseJson(String(stored)) as Object;
             this.bcPrices = doc != null && doc.prices != null ? doc.prices : null;
+            this.bcText = String(stored);
          }
          catch(error:Error)
          {
@@ -1649,7 +1854,7 @@ package
          {
             out.push(piece("BC price","dimgap"));
             out.push(piece(String(saved),"value"));
-            out.push(piece(Number(saved) == 0 ? "no market data" : "from PriceScout","dim"));
+            out.push(piece(hasMarket ? "from PriceScout" : this.markupText() + ", no market data","dim"));
             return out;
          }
          out.push(piece("your BC price","dimgap"));
@@ -1668,13 +1873,13 @@ package
          if(this.marketMode)
          {
             line.push(piece(this.visitApplied ? "ON" : "applying...","good"));
-            line.push(piece("every BC price = market, 0 = no data","dimgap"));
+            line.push(piece("every BC price = market, " + this.markupText() + " when no data","dimgap"));
             line.push(piece("F10 to turn off","dimgap"));
          }
          else
          {
             line.push(piece("OFF","dim"));
-            line.push(piece(this.visitApplied ? "your prices are back" : "F10 sets every BC price to market (0 = no data)","dimgap"));
+            line.push(piece(this.visitApplied ? "your prices are back" : "F10 sets every BC price to market (" + this.markupText() + " when no data)","dimgap"));
          }
          if(this.appliedAfterManager)
          {
@@ -1917,6 +2122,7 @@ package
       private function addError(text:String) : void
       {
          var errors:Array = this.diag.errors as Array;
+         this.diagMustSave = true;
          errors.push(text);
          if(errors.length > MAX_ERRORS)
          {
@@ -2055,6 +2261,11 @@ package
          var i:int = 0;
          var code:int = 0;
          var hex:String = null;
+         // Most strings need no escaping: return them without the per-character loop.
+         if(text.search(NEEDS_ESCAPE) < 0)
+         {
+            return "\"" + text + "\"";
+         }
          while(i < text.length)
          {
             code = text.charCodeAt(i);
@@ -2090,6 +2301,7 @@ package
          var value:* = undefined;
          this.jsonText = text;
          this.jsonPos = 0;
+         this.jsonBackslash = -1;
          value = this.jsonValue();
          this.jsonSpace();
          if(this.jsonPos != this.jsonText.length)
@@ -2215,27 +2427,43 @@ package
          return out;
       }
 
+      // Copies each run of plain characters in one substring, stopping only at the closing
+      // quote or a backslash; building strings a character at a time is slow in Scaleform.
       private function jsonString() : String
       {
          var out:String = "";
          var c:String = null;
+         var close:int = 0;
          if(this.jsonText.charAt(this.jsonPos) != "\"")
          {
             throw new Error("JSON: expected string at " + this.jsonPos);
          }
          this.jsonPos++;
-         while(this.jsonPos < this.jsonText.length)
+         while(true)
          {
-            c = this.jsonText.charAt(this.jsonPos++);
-            if(c == "\"")
+            close = this.jsonText.indexOf("\"",this.jsonPos);
+            if(close < 0)
             {
+               throw new Error("JSON: unterminated string");
+            }
+            // The next backslash is found once and reused until passed, so plain text is
+            // not rescanned for each string.
+            if(this.jsonBackslash < this.jsonPos)
+            {
+               this.jsonBackslash = this.jsonText.indexOf("\\",this.jsonPos);
+               if(this.jsonBackslash < 0)
+               {
+                  this.jsonBackslash = this.jsonText.length;
+               }
+            }
+            if(this.jsonBackslash > close)
+            {
+               out += this.jsonText.substring(this.jsonPos,close);
+               this.jsonPos = close + 1;
                return out;
             }
-            if(c != "\\")
-            {
-               out += c;
-               continue;
-            }
+            out += this.jsonText.substring(this.jsonPos,this.jsonBackslash);
+            this.jsonPos = this.jsonBackslash + 1;
             c = this.jsonText.charAt(this.jsonPos++);
             if(c == "u")
             {
