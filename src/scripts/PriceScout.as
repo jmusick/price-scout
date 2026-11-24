@@ -92,9 +92,20 @@ package
       // History older than this is dropped at login.
       private static const HISTORY_KEEP_DAYS:Number = 60;
       private static const PLACEHOLDER_PRICE:Number = 40000;
-      // The selling price is this quantile of vendors' prices (the lower quartile): asking
-      // prices lean high, since cheap listings sell and expensive ones stay up.
-      private static const SELL_QUANTILE:Number = 0.25;
+      // The market price deals are measured against: the lower quartile of vendors'
+      // prices. Asking prices lean high, since cheap listings sell and expensive ones stay
+      // up. The selling price is set by sellMethod, and is this same quartile by default.
+      private static const MARKET_QUANTILE:Number = 0.25;
+      // Selling price methods (pricescout_settings.json "sellMethod"):
+      //   percentile    the sellPercentile percentile of vendors' prices (default 25)
+      //   undercut      the cheapest vendor's price less undercutPercent
+      //   fencedMedian  the median, leaving out prices outside Tukey's fences (1.5 IQR)
+      private static const METHOD_PERCENTILE:String = "percentile";
+      private static const METHOD_UNDERCUT:String = "undercut";
+      private static const METHOD_FENCED_MEDIAN:String = "fencedMedian";
+      private static const DEFAULT_SELL_PERCENTILE:Number = 25;
+      private static const DEFAULT_UNDERCUT_PERCENT:Number = 5;
+      private static const TUKEY_K:Number = 1.5;
       // Fewer vendors than this is one person's price, not a market: never fed or used in
       // market-price mode (which sets 0 instead), and shown dimmed.
       private static const MARKET_MIN_VENDORS:int = 2;
@@ -118,8 +129,8 @@ package
       private static const COLOR_BAD:uint = 0xFC4442;
       private static const COLOR_PANEL:uint = 0x080A0D;
 
-      // Best deals: items at least DEAL_MIN_PERCENT below the selling price of DEAL_MIN_VENDORS or
-      // more other vendors; the DEALS_SHOWN cheapest relative to market are listed.
+      // Best deals: items at least DEAL_MIN_PERCENT below the market price (lower quartile)
+      // of DEAL_MIN_VENDORS or more other vendors; the DEALS_SHOWN cheapest relative to market are listed.
       private static const DEAL_MIN_VENDORS:int = 2;
       private static const DEAL_MIN_PERCENT:int = 10;
       private static const DEALS_SHOWN:int = 3;
@@ -176,6 +187,12 @@ package
       private var diag:Object;
       private var fullDiagnostics:Boolean = false;
       private var noMarketMarkup:Number = DEFAULT_NO_MARKET_MARKUP;
+      private var sellMethod:String = METHOD_PERCENTILE;
+      private var sellPercentile:Number = DEFAULT_SELL_PERCENTILE;
+      private var undercutPercent:Number = DEFAULT_UNDERCUT_PERCENT;
+      // How many vendors' worth of weight the item value (+noMarketMarkup) gets when
+      // blended into the selling price; 0 turns blending off.
+      private var itemValueWeight:Number = 0;
       private var diagMustSave:Boolean = false;
       private var status:TextField;
       private var statusFormat:TextFormat;
@@ -259,11 +276,18 @@ package
       //   legendary item cards, the last vendor's name) instead of a short summary.
       //   "noMarketMarkupPercent": in market-price mode, an item with no market price is
       //   priced at its item value plus this percentage (default 30).
+      //   "sellMethod": "percentile" (default), "undercut" or "fencedMedian".
+      //   "sellPercentile": the percentile the percentile method uses (default 25).
+      //   "undercutPercent": how far below the cheapest vendor undercut goes (default 5).
+      //   "itemValueWeight": blends the item value (+noMarketMarkupPercent) into the
+      //   selling price as if it were this many vendors (default 0, off).
       private function loadSettings() : void
       {
          var stored:* = undefined;
          var parsed:Object = null;
          var complete:Boolean = false;
+         var names:Array = ["diagnostics","noMarketMarkupPercent","sellMethod","sellPercentile","undercutPercent","itemValueWeight"];
+         var name:String = null;
          try
          {
             stored = this.codeObj.modStorage.load(SETTINGS_STORE);
@@ -271,19 +295,32 @@ package
             {
                parsed = this.parseJson(String(stored)) as Object;
             }
-            complete = parsed != null && parsed.diagnostics !== undefined && parsed.noMarketMarkupPercent !== undefined;
+            complete = parsed != null;
+            for each(name in names)
+            {
+               complete = complete && parsed[name] !== undefined;
+            }
             if(parsed != null)
             {
                this.fullDiagnostics = parsed.diagnostics == true;
-               if(parsed.noMarketMarkupPercent !== undefined && !isNaN(Number(parsed.noMarketMarkupPercent)) && Number(parsed.noMarketMarkupPercent) >= 0)
+               this.noMarketMarkup = settingNumber(parsed.noMarketMarkupPercent,0,Infinity,this.noMarketMarkup);
+               if(parsed.sellMethod == METHOD_PERCENTILE || parsed.sellMethod == METHOD_UNDERCUT || parsed.sellMethod == METHOD_FENCED_MEDIAN)
                {
-                  this.noMarketMarkup = Number(parsed.noMarketMarkupPercent);
+                  this.sellMethod = String(parsed.sellMethod);
                }
+               else if(parsed.sellMethod !== undefined)
+               {
+                  this.addError("settings: unknown sellMethod \"" + parsed.sellMethod + "\", using " + this.sellMethod);
+               }
+               this.sellPercentile = settingNumber(parsed.sellPercentile,0,100,this.sellPercentile);
+               this.undercutPercent = settingNumber(parsed.undercutPercent,0,100,this.undercutPercent);
+               this.itemValueWeight = settingNumber(parsed.itemValueWeight,0,Infinity,this.itemValueWeight);
             }
             // Write the file back with every setting, so missing ones appear with defaults.
+            // An unknown sellMethod is kept as typed, so a typo can be seen and fixed.
             if(!complete)
             {
-               this.codeObj.modStorage.save(SETTINGS_STORE,"{\"version\":1,\"diagnostics\":" + (this.fullDiagnostics ? "true" : "false") + ",\"noMarketMarkupPercent\":" + this.noMarketMarkup + "}");
+               this.codeObj.modStorage.save(SETTINGS_STORE,"{\"version\":1,\"diagnostics\":" + (this.fullDiagnostics ? "true" : "false") + ",\"noMarketMarkupPercent\":" + this.noMarketMarkup + ",\"sellMethod\":" + quote(parsed != null && parsed.sellMethod !== undefined ? String(parsed.sellMethod) : this.sellMethod) + ",\"sellPercentile\":" + this.sellPercentile + ",\"undercutPercent\":" + this.undercutPercent + ",\"itemValueWeight\":" + this.itemValueWeight + "}");
             }
          }
          catch(error:Error)
@@ -291,7 +328,18 @@ package
             this.addError("settings: " + error.message);
          }
          this.diag.diagnostics = this.fullDiagnostics ? "full" : "summary (set \"diagnostics\": true in " + SETTINGS_STORE + ".json for full)";
+         this.diag.sellMethod = this.methodText() + (this.itemValueWeight > 0 ? ", item value weight " + this.itemValueWeight : "");
          this.diagMustSave = true;
+      }
+
+      // A numeric setting within min..max, or fallback when it is missing or out of range.
+      private static function settingNumber(value:*, min:Number, max:Number, fallback:Number) : Number
+      {
+         if(value === undefined || value === null || isNaN(Number(value)) || Number(value) < min || Number(value) > max)
+         {
+            return fallback;
+         }
+         return Number(value);
       }
 
       private function diagSummary() : Object
@@ -299,6 +347,7 @@ package
          return {
             "build":this.diag.build,
             "diagnostics":this.diag.diagnostics,
+            "sellMethod":this.diag.sellMethod,
             "startedAt":this.diag.startedAt,
             "savedAt":this.diag.savedAt,
             "hudMenu":this.diag.hudMenu,
@@ -483,8 +532,24 @@ package
       {
          var stars:int = starsOf(key);
          var entries:Array = stars > 0 ? this.legendaryEntries(key.substr(0,key.indexOf("|")),stars) : this.history[key] as Array;
-         var stats:Object = this.suggest(entries,null);
+         var stats:Object = this.suggest(entries,null,this.ownedValue(key));
          return int(stats.count) >= MARKET_MIN_VENDORS ? Number(stats.sell) : NaN;
+      }
+
+      // The highlighted item's value, from its list entry or failing that your machine.
+      private function panelItemValue(entry:Object, key:String) : Number
+      {
+         if(entry != null && entry.itemValue != null && Number(entry.itemValue) > 0)
+         {
+            return Number(entry.itemValue);
+         }
+         return this.ownedValue(key);
+      }
+
+      // The item value of an item seen at your machine, or NaN.
+      private function ownedValue(key:String) : Number
+      {
+         return this.ownedValues[key] !== undefined && this.ownedValues[key] !== null ? Number(this.ownedValues[key]) : NaN;
       }
 
       // Writes PriceScout's prices into Better Containers' remembered prices, which its
@@ -621,7 +686,7 @@ package
          {
             return -1;
          }
-         stats = this.suggest(this.history[key] as Array,null);
+         stats = this.suggest(this.history[key] as Array,null,this.ownedValue(key));
          if(int(stats.count) < FEED_MIN_VENDORS)
          {
             return -1;
@@ -1294,9 +1359,13 @@ package
 
       // ---- Suggestions ----------------------------------------------------------------
 
-      // Median of each vendor's lowest price on the latest day it was seen, over the last
+      // Prices from each vendor's lowest price on the latest day it was seen, over the last
       // SUGGEST_DAYS days. Free listings, placeholder prices and excludeVendor are left out.
-      private function suggest(entries:Array, excludeVendor:String) : Object
+      //   sell     the selling price, by sellMethod, blended with itemValue (+markup) when
+      //            itemValueWeight is set and itemValue is known
+      //   market   the lower quartile, what deals are measured against
+      //   median, low, high, count
+      private function suggest(entries:Array, excludeVendor:String, itemValue:Number = 0) : Object
       {
          var cutoff:Number = nowSeconds() - SUGGEST_DAYS * DAY_SECONDS;
          var best:Object = {};
@@ -1305,7 +1374,8 @@ package
          var vendor:String = null;
          var price:Number = NaN;
          var day:Number = NaN;
-         var mid:int = 0;
+         var sell:Number = NaN;
+         var blended:Boolean = false;
          for each(entry in entries)
          {
             vendor = String(entry[3]);
@@ -1329,14 +1399,75 @@ package
             return {"count":0};
          }
          prices.sort(Array.NUMERIC);
-         mid = prices.length >> 1;
+         sell = this.methodPrice(prices);
+         if(this.itemValueWeight > 0 && itemValue > 0)
+         {
+            // Shrinks thin markets toward the item value: with 2 vendors and a weight of 3
+            // the item value counts for 60%, with 30 vendors for 9%.
+            sell = (prices.length * sell + this.itemValueWeight * itemValue * (1 + this.noMarketMarkup / 100)) / (prices.length + this.itemValueWeight);
+            blended = true;
+         }
          return {
             "count":prices.length,
-            "sell":Math.round(quantile(prices,SELL_QUANTILE)),
-            "median":Math.round(prices.length % 2 == 1 ? prices[mid] : (prices[mid - 1] + prices[mid]) / 2),
+            "sell":Math.max(1,Math.round(sell)),
+            "blended":blended,
+            "market":Math.round(quantile(prices,MARKET_QUANTILE)),
+            "median":Math.round(quantile(prices,0.5)),
             "low":prices[0],
             "high":prices[prices.length - 1]
          };
+      }
+
+      // The selling price of sorted vendor prices by sellMethod, before blending.
+      private function methodPrice(sorted:Array) : Number
+      {
+         var q1:Number = NaN;
+         var q3:Number = NaN;
+         var fence:Number = NaN;
+         var kept:Array = null;
+         var price:Number = NaN;
+         if(this.sellMethod == METHOD_UNDERCUT)
+         {
+            return Number(sorted[0]) * (1 - this.undercutPercent / 100);
+         }
+         if(this.sellMethod == METHOD_FENCED_MEDIAN)
+         {
+            // Tukey's fences: prices more than 1.5 interquartile ranges outside the middle
+            // half are left out. With 3 vendors or fewer, nothing is ever outside them.
+            q1 = quantile(sorted,0.25);
+            q3 = quantile(sorted,0.75);
+            fence = TUKEY_K * (q3 - q1);
+            kept = [];
+            for each(price in sorted)
+            {
+               if(price >= q1 - fence && price <= q3 + fence)
+               {
+                  kept.push(price);
+               }
+            }
+            return quantile(kept,0.5);
+         }
+         return quantile(sorted,this.sellPercentile / 100);
+      }
+
+      // The active selling method, for the panel and diagnostics.
+      private function methodText() : String
+      {
+         if(this.sellMethod == METHOD_UNDERCUT)
+         {
+            return "cheapest -" + this.undercutPercent + "%";
+         }
+         if(this.sellMethod == METHOD_FENCED_MEDIAN)
+         {
+            return "fenced median";
+         }
+         return "percentile " + this.sellPercentile;
+      }
+
+      // True when the panel should name the method: anything but the default lower quartile.
+      private function methodIsCustom() : Boolean
+      {
+         return this.sellMethod != METHOD_PERCENTILE || this.sellPercentile != DEFAULT_SELL_PERCENTILE;
       }
 
       // The list entry with this serverHandleID, or failing that this name, in the lists
@@ -1669,19 +1800,21 @@ package
          for(key in cheapest)
          {
             stats = this.suggest(this.history[key] as Array,vendor);
-            if(int(stats.count) < DEAL_MIN_VENDORS || Number(stats.sell) <= 0)
+            // Measured against the lower quartile whatever the selling method, so an
+            // undercut seller still sees the same deals.
+            if(int(stats.count) < DEAL_MIN_VENDORS || Number(stats.market) <= 0)
             {
                continue;
             }
             compared++;
             here = cheapest[key].here;
-            if((here - stats.sell) / stats.sell * 100 <= -DEAL_MIN_PERCENT)
+            if((here - stats.market) / stats.market * 100 <= -DEAL_MIN_PERCENT)
             {
                deals.push({
                   "name":shortName(String(cheapest[key].entry.text),DEAL_NAME_LENGTH),
                   "here":here,
-                  "market":stats.sell,
-                  "ratio":here / stats.sell
+                  "market":stats.market,
+                  "ratio":here / stats.market
                });
             }
          }
@@ -1748,7 +1881,7 @@ package
             // same name and stars, any level.
             legendary = true;
             key = itemKey(entry);
-            stats = this.suggest(this.legendaryEntries(String(entry.text),int(entry.numLegendaryStars)),browsingOther ? this.currentVendor() : null);
+            stats = this.suggest(this.legendaryEntries(String(entry.text),int(entry.numLegendaryStars)),browsingOther ? this.currentVendor() : null,this.panelItemValue(entry,key));
             if(exact)
             {
                this.captureLegendaryCard(entry);
@@ -1757,7 +1890,7 @@ package
          else if(entry != null)
          {
             key = itemKey(entry);
-            stats = this.suggest(this.history[key] as Array,browsingOther ? this.currentVendor() : null);
+            stats = this.suggest(this.history[key] as Array,browsingOther ? this.currentVendor() : null,this.panelItemValue(entry,key));
          }
          else if(this.cardText != null)
          {
@@ -1785,10 +1918,14 @@ package
          }
          else
          {
-            // Sell: the lower quartile of vendors' prices, competitive without matching
-            // the cheapest. Typical: the median asking price.
+            // Sell: by sellMethod, the lower quartile of vendors' prices by default,
+            // competitive without matching the cheapest. Typical: the median asking price.
             line.push(piece("sell","dimgap"));
             line.push(piece(String(stats.sell),"price"));
+            if(this.methodIsCustom() || stats.blended == true)
+            {
+               line.push(piece((this.methodIsCustom() ? this.methodText() : "") + (this.methodIsCustom() && stats.blended == true ? ", " : "") + (stats.blended == true ? "with item value" : ""),"dim"));
+            }
             line.push(piece("typical " + stats.median,"dim"));
             line.push(piece(stats.count + " vendors   " + stats.low + "-" + stats.high,"dimgap"));
             if(legendary)

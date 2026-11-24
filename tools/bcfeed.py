@@ -5,8 +5,9 @@ Usage:
   python -I tools/bcfeed.py remove    take PriceScout's prices back out (run with the game closed)
 
 The mod itself does the feeding in game. Same rules here: non-legendary items seen at
-FEED_MIN_VENDORS or more vendors, at the selling price (lower quartile, see report.py); a key is only added if Better Containers has no price
-for it, and only updated if it still holds the value PriceScout last wrote.
+FEED_MIN_VENDORS or more vendors, at the selling price (the sellMethod in
+pricescout_settings.json, see report.py); a key is only added if Better Containers has
+no price for it, and only updated if it still holds the value PriceScout last wrote.
 """
 
 import json
@@ -14,7 +15,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from report import DAY, sell_price, vendor_prices  # noqa: E402
+from report import DAY, load_settings, method_text, sell_price, vendor_prices  # noqa: E402
 
 import time  # noqa: E402
 
@@ -45,6 +46,8 @@ def preview():
         print("item value plus noMarketMarkupPercent (30% by default) when fewer than 2 vendors had the item.")
         print(f"{len(record.get('originals', {}))} of your own prices are saved and come back when it is switched off.")
         return
+    settings = load_settings(MODSDATA)
+    item_values = record.get("ownedValues", {})
     cutoff = time.time() - DAYS * DAY
     added, updated, yours = [], [], []
     for key, entries in sorted(history.items()):
@@ -53,7 +56,7 @@ def preview():
         found = vendor_prices(entries, cutoff)
         if len(found) < FEED_MIN_VENDORS:
             continue
-        price = int(max(1, min(BC_MAX_PRICE, sell_price(found))))
+        price = int(max(1, min(BC_MAX_PRICE, sell_price(found, settings, item_values.get(key)))))
         current = prices.get(key)
         if current is None:
             added.append((key, price))
@@ -63,6 +66,7 @@ def preview():
         else:
             yours.append((key, current, price))
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    print(f"sell: {method_text(settings)}")
     print(f"would add {len(added)}, update {len(updated)}, keep {len(yours)} of your own prices")
     for key, price in added:
         print(f"  add     {key.lstrip(' ¶'):<55} {price}")

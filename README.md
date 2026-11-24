@@ -38,13 +38,45 @@ From vendors' asking prices over the last 30 days, counting each vendor once per
 cheapest stack on the most recent day it was seen), leaving out free listings and 40000+
 "not for sale" placeholders:
 
-- **sell**: the lower quartile, a quarter of the way up from the cheapest vendor. This is
-  the suggested selling price, what the Better Containers feed and market-price mode use,
-  and what "vs market" and the deals compare with. Asking prices lean high, since cheap
-  listings sell and expensive ones stay up, so the median is not a "will sell" price.
+- **sell**: the suggested selling price, what the Better Containers feed and market-price
+  mode use, and what the panel's percentages compare with. By default it is the lower
+  quartile, a quarter of the way up from the cheapest vendor. Asking prices lean high,
+  since cheap listings sell and expensive ones stay up, so the median is not a "will
+  sell" price. Other methods are below.
+- **market**: always the lower quartile, whatever the sell method. The deals at other
+  players' shops are measured against it.
 - **typical**: the median asking price.
 - Items seen at only **one vendor** have no market: shown dimmed as "1 vendor only" and
   never used.
+
+### Sell methods
+
+`sellMethod` in `pricescout_settings.json` picks how the sell price is worked out from the
+vendors' prices. Settings are read when the mod loads, so change them with the game closed.
+
+| `sellMethod` | Sell price | Use it to |
+|---|---|---|
+| `"percentile"` (default) | The `sellPercentile` percentile (default 25): with 9 vendors, 25 is the 3rd cheapest, 50 the median, 10 just above the cheapest. Linear between vendors. | Pick how patient you are: lower sells faster, higher earns more per sale. |
+| `"undercut"` | The cheapest vendor's price less `undercutPercent` (default 5). | Sell fast by being the cheapest. One lowball listing drags it down. |
+| `"fencedMedian"` | The median after leaving out prices outside Tukey's fences: more than 1.5 times the interquartile range below the lower quartile or above the upper quartile. | Price at the middle of the market without the 9,999-cap anchor listings. It needs 4 or more vendors to leave anything out. |
+
+`itemValueWeight` (default 0, off) works with any method. It blends the item value plus
+`noMarketMarkupPercent` into the sell price as if it were that many more vendors:
+
+```
+sell = (vendors × method price + itemValueWeight × item value × (1 + markup)) / (vendors + itemValueWeight)
+```
+
+With a weight of 3, the item value counts for 60% with 2 vendors and 9% with 30, so a
+thin market leans on the item value and a busy one barely moves. It needs the item value,
+which PriceScout knows for items it has seen at your machine and, in the panel, for the
+highlighted item. Items without one get the method price alone. Items seen at one vendor
+still have no sell price.
+
+When the method is not the default 25th percentile, or the price was blended, the panel
+names it after the price: `sell 48  cheapest -5%`, `sell 61  with item value`.
+
+Sell prices are whole caps, at least 1.
 
 Legendary items are matched on name (base item, weapon mods and 1st-star effect) and star
 count, at any level. Vendor lists never include their other effects; those only appear on
@@ -60,7 +92,7 @@ While a vending machine is open, a panel at the bottom centre shows:
   - At your own machine, where Better Containers' price comes from: `your BC price 265  +430%`,
     `BC price 50  from PriceScout`, `BC price: item value`, or `listed at 265  +430%`.
 - At another player's shop, its best deals: non-legendary items at least 10% below the
-  sell price of 2 or more other vendors, cheapest relative to market first. Plans and
+  market price (lower quartile) of 2 or more other vendors, cheapest relative to market first. Plans and
   recipes you already know are left out.
 - At your own machine, market-price mode and its F10 switch.
 
@@ -96,6 +128,8 @@ It stays on, and is reapplied whenever a menu closes, until you press F10 again.
 python -I tools\report.py                       # every item
 python -I tools\report.py --filter "plan:"      # names containing "plan:"
 python -I tools\report.py --min-vendors 2       # only items with a market
+python -I tools\report.py --method undercut --undercut 10   # try a sell method without changing the settings
+python -I tools\report.py --item-value-weight 3              # try blending in the item value
 python -I tools\bcfeed.py preview               # what the feed would add or update now
 python -I tools\bcfeed.py remove                # take PriceScout's prices out of Better Containers, restore yours (game closed)
 ```
@@ -108,7 +142,7 @@ Everything is in the game's `Data\modsdata\` folder, saved through xScal:
 |---|---|
 | `pricescout_history.json` | Recorded prices: time, price, quantity, a hash of the vendor's name, menu type. Entries older than 60 days are dropped at login. |
 | `pricescout_bcfeed.json` | Prices written into Better Containers, your prices saved by market-price mode, item values of what you own, and whether the mode is on. |
-| `pricescout_settings.json` | Settings, created on first run: `"diagnostics": false` (true for full diagnostics) and `"noMarketMarkupPercent": 30` (market-price mode's markup on the item value for items with no market price). |
+| `pricescout_settings.json` | Settings, created on first run, with missing ones added: `"diagnostics": false` (true for full diagnostics), `"noMarketMarkupPercent": 30` (the markup on the item value for items with no market price, and in blending), and the [sell method](#sell-methods) settings `"sellMethod": "percentile"`, `"sellPercentile": 25`, `"undercutPercent": 5` and `"itemValueWeight": 0`. A value out of range uses the default; an unknown `sellMethod` uses `"percentile"` and is reported in `pricescout_diag.json`. |
 | `pricescout_diag.json` | A short status summary, written at login and on errors. With `"diagnostics": true`, the full diagnostics instead: event log, data samples, legendary item cards and the last vendor's name. |
 
 To purge everything, with the game closed: run `tools\bcfeed.py remove` first (it needs
