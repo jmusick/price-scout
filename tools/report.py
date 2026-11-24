@@ -2,7 +2,7 @@
 
 Usage: python -I tools/report.py [path to pricescout_history.json] [--days N] [--filter text]
                                  [--min-vendors N] [--method M] [--percentile P]
-                                 [--undercut P] [--item-value-weight W]
+                                 [--undercut P] [--item-value-weight W] [--round-to N]
 
 Prices are vendors' asking prices over the last N days (default 30), counting each vendor
 once per item: its lowest price on the most recent day it was seen, which is what a buyer
@@ -20,7 +20,8 @@ and prices at or above 40000, the usual "not for sale" placeholder, are left out
                            ranges outside the middle half (needs 4+ vendors to drop any)
            With --item-value-weight W above 0, blended with the item value plus
            noMarketMarkupPercent as if that were W vendors, for items whose value the mod
-           has seen at your machine (pricescout_bcfeed.json).
+           has seen at your machine (pricescout_bcfeed.json). Rounded to the nearest
+           --round-to caps (default 5), except below that.
   market   the lower quartile, what the in-game deals are measured against.
   typical  the median asking price.
 
@@ -47,6 +48,7 @@ DEFAULT_SETTINGS = {
     "sellPercentile": 25,
     "undercutPercent": 5,
     "itemValueWeight": 0,
+    "roundTo": 5,
 }
 # Allowed ranges; the mod uses its default for a value outside them.
 LIMITS = {
@@ -54,6 +56,7 @@ LIMITS = {
     "sellPercentile": (0, 100),
     "undercutPercent": (0, 100),
     "itemValueWeight": (0, float("inf")),
+    "roundTo": (1, 1000),
 }
 
 
@@ -85,7 +88,18 @@ def load_settings(folder):
         value = stored.get(name)
         if isinstance(value, (int, float)) and not isinstance(value, bool) and low <= value <= high:
             settings[name] = value
+    if stored.get("roundTo") in ("none", 0):  # whole caps, the same as 1
+        settings["roundTo"] = 1
+    settings["roundTo"] = int(settings["roundTo"])
     return settings
+
+
+def round_price(price, round_to):
+    """A suggested price in whole caps, at least 1: to the nearest multiple of round_to,
+    except below round_to, where rounding would make a cheap item free or double it."""
+    if price < round_to:
+        return max(1, mod_round(price))
+    return mod_round(price / round_to) * round_to
 
 
 def load_item_values(folder):
@@ -122,7 +136,7 @@ def sell_price(sorted_prices, settings=DEFAULT_SETTINGS, item_value=None):
     if weight > 0 and isinstance(item_value, (int, float)) and item_value > 0:
         fallback = item_value * (1 + settings["noMarketMarkupPercent"] / 100)
         price = (len(sorted_prices) * price + weight * fallback) / (len(sorted_prices) + weight)
-    return max(1, mod_round(price))
+    return round_price(price, settings["roundTo"])
 
 
 def method_text(settings):
@@ -137,6 +151,8 @@ def method_text(settings):
     if settings["itemValueWeight"] > 0:
         text += (f", blended with item value +{settings['noMarketMarkupPercent']:g}%"
                  f" as {settings['itemValueWeight']:g} vendors where it is known")
+    if settings["roundTo"] > 1:
+        text += f", rounded to {settings['roundTo']}"
     return text
 
 
@@ -196,11 +212,14 @@ def main():
     parser.add_argument("--percentile", type=float, help="percentile for the percentile method, 0-100")
     parser.add_argument("--undercut", type=float, help="percent below the cheapest vendor for the undercut method")
     parser.add_argument("--item-value-weight", type=float, help="blend in the item value as this many vendors (0: off)")
+    parser.add_argument("--round-to", type=lambda v: 1 if v in ("none", "0") else int(v),
+                        help='round sell prices to this many caps ("none" for whole caps)')
     args = parser.parse_args()
     folder = os.path.dirname(os.path.abspath(args.path))
     settings = load_settings(folder)
     for name, value in (("sellMethod", args.method), ("sellPercentile", args.percentile),
-                        ("undercutPercent", args.undercut), ("itemValueWeight", args.item_value_weight)):
+                        ("undercutPercent", args.undercut), ("itemValueWeight", args.item_value_weight),
+                        ("roundTo", args.round_to)):
         if value is None:
             continue
         if name in LIMITS and not LIMITS[name][0] <= value <= LIMITS[name][1]:

@@ -105,6 +105,9 @@ package
       private static const METHOD_FENCED_MEDIAN:String = "fencedMedian";
       private static const DEFAULT_SELL_PERCENTILE:Number = 25;
       private static const DEFAULT_UNDERCUT_PERCENT:Number = 5;
+      // Suggested prices are rounded to this many caps, unless the settings say otherwise.
+      private static const DEFAULT_ROUND_TO:int = 5;
+      private static const MAX_ROUND_TO:int = 1000;
       private static const TUKEY_K:Number = 1.5;
       // Fewer vendors than this is one person's price, not a market: never fed or used in
       // market-price mode (which sets 0 instead), and shown dimmed.
@@ -193,6 +196,7 @@ package
       // How many vendors' worth of weight the item value (+noMarketMarkup) gets when
       // blended into the selling price; 0 turns blending off.
       private var itemValueWeight:Number = 0;
+      private var roundTo:int = DEFAULT_ROUND_TO;
       private var diagMustSave:Boolean = false;
       private var status:TextField;
       private var statusFormat:TextFormat;
@@ -281,12 +285,14 @@ package
       //   "undercutPercent": how far below the cheapest vendor undercut goes (default 5).
       //   "itemValueWeight": blends the item value (+noMarketMarkupPercent) into the
       //   selling price as if it were this many vendors (default 0, off).
+      //   "roundTo": suggested prices are rounded to the nearest multiple of this many
+      //   caps (default 5; "none", 0 or 1 for whole caps). Prices below it are left as they are.
       private function loadSettings() : void
       {
          var stored:* = undefined;
          var parsed:Object = null;
          var complete:Boolean = false;
-         var names:Array = ["diagnostics","noMarketMarkupPercent","sellMethod","sellPercentile","undercutPercent","itemValueWeight"];
+         var names:Array = ["diagnostics","noMarketMarkupPercent","sellMethod","sellPercentile","undercutPercent","itemValueWeight","roundTo"];
          var name:String = null;
          try
          {
@@ -315,12 +321,21 @@ package
                this.sellPercentile = settingNumber(parsed.sellPercentile,0,100,this.sellPercentile);
                this.undercutPercent = settingNumber(parsed.undercutPercent,0,100,this.undercutPercent);
                this.itemValueWeight = settingNumber(parsed.itemValueWeight,0,Infinity,this.itemValueWeight);
+               // "none" or 0: whole caps, the same as 1.
+               if(parsed.roundTo == "none" || (parsed.roundTo !== undefined && parsed.roundTo !== null && parsed.roundTo !== "" && Number(parsed.roundTo) == 0))
+               {
+                  this.roundTo = 1;
+               }
+               else
+               {
+                  this.roundTo = int(Math.floor(settingNumber(parsed.roundTo,1,MAX_ROUND_TO,this.roundTo)));
+               }
             }
             // Write the file back with every setting, so missing ones appear with defaults.
             // An unknown sellMethod is kept as typed, so a typo can be seen and fixed.
             if(!complete)
             {
-               this.codeObj.modStorage.save(SETTINGS_STORE,"{\"version\":1,\"diagnostics\":" + (this.fullDiagnostics ? "true" : "false") + ",\"noMarketMarkupPercent\":" + this.noMarketMarkup + ",\"sellMethod\":" + quote(parsed != null && parsed.sellMethod !== undefined ? String(parsed.sellMethod) : this.sellMethod) + ",\"sellPercentile\":" + this.sellPercentile + ",\"undercutPercent\":" + this.undercutPercent + ",\"itemValueWeight\":" + this.itemValueWeight + "}");
+               this.codeObj.modStorage.save(SETTINGS_STORE,"{\"version\":1,\"diagnostics\":" + (this.fullDiagnostics ? "true" : "false") + ",\"noMarketMarkupPercent\":" + this.noMarketMarkup + ",\"sellMethod\":" + quote(parsed != null && parsed.sellMethod !== undefined ? String(parsed.sellMethod) : this.sellMethod) + ",\"sellPercentile\":" + this.sellPercentile + ",\"undercutPercent\":" + this.undercutPercent + ",\"itemValueWeight\":" + this.itemValueWeight + ",\"roundTo\":" + this.roundTo + "}");
             }
          }
          catch(error:Error)
@@ -328,7 +343,7 @@ package
             this.addError("settings: " + error.message);
          }
          this.diag.diagnostics = this.fullDiagnostics ? "full" : "summary (set \"diagnostics\": true in " + SETTINGS_STORE + ".json for full)";
-         this.diag.sellMethod = this.methodText() + (this.itemValueWeight > 0 ? ", item value weight " + this.itemValueWeight : "");
+         this.diag.sellMethod = this.methodText() + (this.itemValueWeight > 0 ? ", item value weight " + this.itemValueWeight : "") + ", rounded to " + this.roundTo;
          this.diagMustSave = true;
       }
 
@@ -776,10 +791,21 @@ package
          return counts;
       }
 
-      // Item value plus the no-market markup, rounded, at least 1.
+      // Item value plus the no-market markup, rounded to roundTo, at least 1.
       private function noMarketPrice(itemValue:Number) : int
       {
-         return int(Math.max(1,Math.min(BC_MAX_PRICE,Math.round(itemValue * (1 + this.noMarketMarkup / 100)))));
+         return int(Math.min(BC_MAX_PRICE,this.roundPrice(itemValue * (1 + this.noMarketMarkup / 100))));
+      }
+
+      // A suggested price in whole caps, at least 1: to the nearest multiple of roundTo,
+      // except below roundTo, where rounding would make a cheap item free or double it.
+      private function roundPrice(price:Number) : Number
+      {
+         if(price < this.roundTo)
+         {
+            return Math.max(1,Math.round(price));
+         }
+         return Math.round(price / this.roundTo) * this.roundTo;
       }
 
       private function markupText() : String
@@ -1409,7 +1435,7 @@ package
          }
          return {
             "count":prices.length,
-            "sell":Math.max(1,Math.round(sell)),
+            "sell":this.roundPrice(sell),
             "blended":blended,
             "market":Math.round(quantile(prices,MARKET_QUANTILE)),
             "median":Math.round(quantile(prices,0.5)),

@@ -76,7 +76,12 @@ still have no sell price.
 When the method is not the default 25th percentile, or the price was blended, the panel
 names it after the price: `sell 48  cheapest -5%`, `sell 61  with item value`.
 
-Sell prices are whole caps, at least 1.
+Sell prices, and market-price mode's item value +30%, are rounded to the nearest
+`roundTo` caps (default 5), so 43 becomes 45 and 1,872 becomes 1,870. Prices below
+`roundTo` are only rounded to whole caps, at least 1, so a 2-cap item isn't listed free
+or at 5. `roundTo` takes any number of caps from 1 to 1000, such as 5, 10 or 25, or
+`"none"` for whole caps. The market, typical, low and high figures are
+never rounded.
 
 Legendary items are matched on name (base item, weapon mods and 1st-star effect) and star
 count, at any level. Vendor lists never include their other effects; those only appear on
@@ -114,7 +119,7 @@ starting price when you put an item up for sale:
 Press F10 while your own vending machine is open, before pressing M for the Vendor
 manager. Every remembered price, and every item you have at the machine, is then set to
 PriceScout's sell price, or to the **item value +30%** when fewer than 2 vendors had the
-item (the markup is the `noMarketMarkupPercent` setting).
+item (the markup is the `noMarketMarkupPercent` setting), rounded to `roundTo`.
 It stays on, and is reapplied whenever a menu closes, until you press F10 again.
 
 - Better Containers reads remembered prices on the first M press of a machine visit. If
@@ -130,6 +135,8 @@ python -I tools\report.py --filter "plan:"      # names containing "plan:"
 python -I tools\report.py --min-vendors 2       # only items with a market
 python -I tools\report.py --method undercut --undercut 10   # try a sell method without changing the settings
 python -I tools\report.py --item-value-weight 3              # try blending in the item value
+python -I tools\report.py --round-to none                    # sell prices in whole caps
+python -I tools\report.py --round-to 10                      # try rounding to 10
 python -I tools\bcfeed.py preview               # what the feed would add or update now
 python -I tools\bcfeed.py remove                # take PriceScout's prices out of Better Containers, restore yours (game closed)
 ```
@@ -142,7 +149,7 @@ Everything is in the game's `Data\modsdata\` folder, saved through xScal:
 |---|---|
 | `pricescout_history.json` | Recorded prices: time, price, quantity, a hash of the vendor's name, menu type. Entries older than 60 days are dropped at login. |
 | `pricescout_bcfeed.json` | Prices written into Better Containers, your prices saved by market-price mode, item values of what you own, and whether the mode is on. |
-| `pricescout_settings.json` | Settings, created on first run, with missing ones added: `"diagnostics": false` (true for full diagnostics), `"noMarketMarkupPercent": 30` (the markup on the item value for items with no market price, and in blending), and the [sell method](#sell-methods) settings `"sellMethod": "percentile"`, `"sellPercentile": 25`, `"undercutPercent": 5` and `"itemValueWeight": 0`. A value out of range uses the default; an unknown `sellMethod` uses `"percentile"` and is reported in `pricescout_diag.json`. |
+| `pricescout_settings.json` | Settings, created on first run, with missing ones added: `"diagnostics": false` (true for full diagnostics), `"noMarketMarkupPercent": 30` (the markup on the item value for items with no market price, and in blending), and the [sell method](#sell-methods) settings `"sellMethod": "percentile"`, `"sellPercentile": 25`, `"undercutPercent": 5`, `"itemValueWeight": 0` and `"roundTo": 5` (1 to 1000 caps, or `"none"`). A value out of range uses the default; an unknown `sellMethod` uses `"percentile"` and is reported in `pricescout_diag.json`. |
 | `pricescout_diag.json` | A short status summary, written at login and on errors. With `"diagnostics": true`, the full diagnostics instead: event log, data samples, legendary item cards and the last vendor's name. |
 
 To purge everything, with the game closed: run `tools\bcfeed.py remove` first (it needs
