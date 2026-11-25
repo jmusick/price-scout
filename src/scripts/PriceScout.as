@@ -22,7 +22,7 @@ package
    //   pricescout_diag.json     what the providers sent, for working out the data shape
    public class PriceScout extends MovieClip
    {
-      public static const BUILD:String = "0.10.0";
+      public static const BUILD:String = "0.11.0";
 
       private static const HISTORY_STORE:String = "pricescout_history";
       private static const DIAG_STORE:String = "pricescout_diag";
