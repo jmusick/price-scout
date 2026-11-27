@@ -1,0 +1,39 @@
+# Downloads JPEXS Free Flash Decompiler, whose AS3 compiler build.ps1 uses, and checks it against a
+# pinned SHA-256. To upgrade: pick a release at least two weeks old from
+# https://github.com/jindrapetrik/jpexs-decompiler/releases and copy the ffdec_<version>.zip digest
+# (gh api repos/jindrapetrik/jpexs-decompiler/releases/tags/version<version> --jq '.assets[] | "\(.name) \(.digest)"').
+name: Set up JPEXS
+description: Installs a pinned JPEXS Free Flash Decompiler and Java 21, and outputs the path to ffdec.jar.
+
+outputs:
+  ffdec:
+    description: Path to ffdec.jar, for build.ps1 -Ffdec.
+    value: ${{ steps.install.outputs.ffdec }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install JPEXS
+      id: install
+      shell: pwsh
+      env:
+        JPEXS_VERSION: 26.4.0
+        JPEXS_SHA256: 56ce960aeafc7caf034e2052ba49f878a883f7c7ca690da6eeffca9587b5e4b9
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $zip = Join-Path $env:RUNNER_TEMP "ffdec_$env:JPEXS_VERSION.zip"
+        $url = "https://github.com/jindrapetrik/jpexs-decompiler/releases/download/version$env:JPEXS_VERSION/ffdec_$env:JPEXS_VERSION.zip"
+        Invoke-WebRequest -Uri $url -OutFile $zip -MaximumRetryCount 3 -RetryIntervalSec 5
+        $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($hash -ne $env:JPEXS_SHA256) { throw "ffdec_$env:JPEXS_VERSION.zip SHA-256 is $hash, expected $env:JPEXS_SHA256" }
+
+        $dir = Join-Path $env:RUNNER_TEMP 'ffdec'
+        Expand-Archive $zip $dir -Force
+        $jar = Get-ChildItem $dir -Recurse -Filter ffdec.jar | Select-Object -First 1
+        if (-not $jar) { throw "ffdec.jar not found in ffdec_$env:JPEXS_VERSION.zip" }
+
+        # The runner image has several JDKs; use 21 rather than whichever is first on PATH.
+        if (-not $env:JAVA_HOME_21_X64) { throw "JAVA_HOME_21_X64 is not set on this runner" }
+        Add-Content $env:GITHUB_PATH (Join-Path $env:JAVA_HOME_21_X64 'bin')
+        Add-Content $env:GITHUB_OUTPUT "ffdec=$($jar.FullName)"
+        Write-Host "JPEXS $env:JPEXS_VERSION at $($jar.FullName)"

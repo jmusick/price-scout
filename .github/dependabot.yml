@@ -1,0 +1,22 @@
+# Dependabot version updates, from the jmusick/ci template. Security updates are a separate repository
+# setting and are not controlled by this file.
+#
+# Keeps SHA-pinned actions current, including the jmusick/ci shared workflows. The cooldown holds each
+# new release back for a week so a yanked or compromised release is usually caught before it reaches a
+# PR; jmusick/ci releases skip it. JPEXS in .github/actions/setup-jpexs is pinned by hand.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+      time: "06:00"
+    open-pull-requests-limit: 3
+    labels: [dependencies]
+    cooldown:
+      default-days: 7
+      exclude:
+        - "jmusick/*"
+    groups:
+      actions:
+        patterns: ["*"]

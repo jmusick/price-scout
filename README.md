@@ -16,7 +16,7 @@ and suggests prices for selling your own.
 - Optional: [Better Containers](https://www.nexusmods.com/fallout76/mods/4485), for the
   price feed and market-price mode
 - To build: Python 3 and JPEXS Free Flash Decompiler (its AS3 compiler is used, so no
-  Flex SDK)
+  Flex SDK). `build.ps1 -Ffdec` takes `ffdec-cli.exe` or, with Java on PATH, `ffdec.jar`.
 
 ## Build, install, uninstall
 
@@ -29,6 +29,25 @@ and suggests prices for selling your own.
 `install.ps1` backs up both ini files as `*.pricescout-backup` the first time. It
 defaults to `C:\Games\Steam\steamapps\common\Fallout76`; pass `-GameDir` for another
 install.
+
+## Releases and Nexus Mods
+
+```powershell
+.\package.ps1              # dist\PriceScout-<BUILD>.zip, after .\build.ps1
+```
+
+The zip is what goes on Nexus Mods: `PriceScout.ba2` and `PriceScout_README.txt` (from
+`packaging\README.txt`, with the install steps for players) at its root, so the archive
+root is the game's `Data` folder.
+
+Pushing a `vX.Y.Z` tag (for example with `/release`) runs the Release workflow. It checks
+that the tag matches `PriceScout.BUILD`, builds and packages on a Windows runner with a
+pinned JPEXS, and publishes a GitHub Release with the zip attached, through the shared
+[jmusick/ci](https://github.com/jmusick/ci) release workflow. Download the zip from the
+release and upload it to the mod's Files tab on Nexus Mods, with the same version.
+
+The CI workflow runs the jmusick/ci baseline (secret scan) and the same build on every push
+to `main` and every pull request, and keeps the zip as a workflow artifact for 7 days.
 
 ## Prices
 
@@ -185,3 +204,6 @@ To purge everything, with the game closed: run `tools\bcfeed.py remove` first (i
 | `tools/report.py` | Price report from the history file |
 | `tools/bcfeed.py` | Preview or undo the Better Containers feed |
 | `build.ps1`, `install.ps1` | Build and install |
+| `package.ps1`, `packaging/README.txt` | The Nexus Mods zip and its player readme |
+| `.github/workflows/` | CI and releases, through jmusick/ci |
+| `.github/actions/setup-jpexs/` | Installs the pinned JPEXS on CI runners |

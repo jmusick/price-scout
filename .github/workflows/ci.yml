@@ -1,0 +1,73 @@
+# Checks every push to main and every pull request: the jmusick/ci baseline (secret scan) and a build
+# of the mod and its Nexus Mods zip. Require the "CI gate" check in branch protection.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  baseline:
+    name: Baseline
+    uses: jmusick/ci/.github/workflows/baseline.yml@a8ac9c292577382c63e5a38af58d38a4cd6f8504 # v0.3.0
+
+  build:
+    name: Build
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JPEXS
+        id: jpexs
+        uses: ./.github/actions/setup-jpexs
+
+      - name: Build
+        shell: pwsh
+        env:
+          FFDEC: ${{ steps.jpexs.outputs.ffdec }}
+        run: ./build.ps1 -Ffdec $env:FFDEC
+
+      - name: Package
+        shell: pwsh
+        run: ./package.ps1
+
+      - name: Upload the package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: PriceScout
+          path: dist/PriceScout-*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  # The one check to require in branch protection. It passes only when every job above passed, so
+  # adding a job never means updating the protection rule.
+  gate:
+    name: CI gate
+    if: always()
+    needs: [baseline, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to have passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "::error::A required job did not succeed."
+              exit 1
+            fi
+          done
