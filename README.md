@@ -11,8 +11,13 @@ and suggests prices for selling your own.
 ## Requirements
 
 - [xScal](https://www.nexusmods.com/fallout76/mods/4183), for saving data (`modStorage`)
-  and the F10 hotkey (`Input`)
-- HUDModLoader, which loads the mod into the HUD
+  and the F10 hotkey (`Input`). Its `dxgi.dll` goes in the game folder next to
+  `Fallout76.exe`, not in `Data`. After each game patch it needs a new Address Library
+  file, which it offers at startup; until then PriceScout can't save.
+- [HUD Mod Loader](https://www.nexusmods.com/fallout76/mods/3144), which loads the mod
+  into the HUD. It ships `hudmodloader.ini`, and `HUDModLoader.ba2` has to be last in
+  `sResourceArchive2List` (or `ChatMod.ba2`, with Text Chat), so PriceScout goes before
+  it.
 - Optional: [Better Containers](https://www.nexusmods.com/fallout76/mods/4485), for the
   price feed and market-price mode
 - To build: Python 3 and JPEXS Free Flash Decompiler (its AS3 compiler is used, so no

@@ -1,6 +1,8 @@
 # Installs (or with -Uninstall removes) the PriceScout test build.
 #   - copies dist\PriceScout.ba2 into <game>\Data
-#   - adds PriceScout.ba2 to sResourceArchive2List in Fallout76Custom.ini
+#   - adds PriceScout.ba2 to sResourceArchive2List in Fallout76Custom.ini, before
+#     HUDModLoader.ba2 or ChatMod.ba2, which have to stay last
+#     (an existing entry after them is moved)
 #   - adds PriceScout to <game>\Data\hudmodloader.ini
 # Both ini files are backed up next to themselves as *.pricescout-backup the first time.
 param(
@@ -40,11 +42,20 @@ $entries = @()
 if ($index -ge 0) {
     $entries = @(($lines[$index] -replace '^[^=]*=', '').Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 }
-$hasArchive = $entries -contains $archive
-if ($Uninstall) { $entries = @($entries | Where-Object { $_ -ne $archive }) }
-elseif (-not $hasArchive) { $entries += $archive }
+$original = $entries -join ", "
+$entries = @($entries | Where-Object { $_ -ne $archive })
+if (-not $Uninstall) {
+    # HUD Mod Loader has to stay last (or Text Chat's ChatMod.ba2), so PriceScout goes before it.
+    $at = $entries.Count
+    for ($i = 0; $i -lt $entries.Count; $i++) {
+        if ($entries[$i] -in @("HUDModLoader.ba2", "ChatMod.ba2")) { $at = $i; break }
+    }
+    $list = [Collections.Generic.List[string]]::new([string[]]$entries)
+    $list.Insert($at, $archive)
+    $entries = $list.ToArray()
+}
 
-if ($Uninstall -eq $hasArchive) {
+if (($entries -join ", ") -ne $original) {
     Backup-Once $customIni
     $newLine = "sResourceArchive2List=" + ($entries -join ", ")
     if ($index -ge 0) {
