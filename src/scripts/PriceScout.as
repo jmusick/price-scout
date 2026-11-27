@@ -75,6 +75,9 @@ package
       private static const MAX_ERRORS:int = 20;
       private static const MAX_LOG:int = 60;
       private static const REWATCH_MIN_MS:int = 1000;
+      // Reopening the same vendor sends no new type data or item card, since neither has
+      // changed; if none has arrived this long after the menu opens, they are read again.
+      private static const REOPEN_CHECK_MS:int = 300;
       private static const CODE_OBJECT_WAIT_FRAMES:int = 1800;
       private static const SAVE_INTERVAL_MS:int = 3000;
       private static const DAY_SECONDS:Number = 86400;
@@ -185,6 +188,10 @@ package
       private var lastRewatch:Object = {};
       private var listOwners:Object = {};
       private var hudMode:String;
+      // hudModes seen while a vendor or container was open, this visit and the last one.
+      private var visitModes:Object = {};
+      private var closedModes:Object = {};
+      private var reopenTimer:Timer;
       private var panelBox:Shape;
       private var panelFields:Array = [];
       private var diag:Object;
@@ -260,6 +267,8 @@ package
             this.reportFatal("BSUIDataManager not found: " + error.message);
             return;
          }
+         this.reopenTimer = new Timer(REOPEN_CHECK_MS,1);
+         this.reopenTimer.addEventListener(TimerEvent.TIMER,this.onReopenCheck);
          this.subscribe(TYPE_PROVIDER);
          this.subscribe(INVENTORY_PROVIDER);
          this.subscribe(OFFERS_PROVIDER);
@@ -1058,6 +1067,10 @@ package
                this.typeData = data;
                this.diag.lastType = dump(data,2);
                this.diag.lastTypeAt = nowSeconds();
+               if(data != null && this.menuOpen())
+               {
+                  this.visitModes[this.hudMode] = true;
+               }
                this.onTypeData();
                this.processVendor();
             }
@@ -1176,6 +1189,13 @@ package
       // Menu closed: forget its data so the next menu cannot reuse it.
       private function onMenuClosed() : void
       {
+         var mode:String = null;
+         for(mode in this.visitModes)
+         {
+            this.closedModes = this.visitModes;
+            break;
+         }
+         this.visitModes = {};
          if(this.feedStale)
          {
             this.feedPending = true;
@@ -2235,11 +2255,56 @@ package
             this.logEvent("hudMode " + mode);
             if(show)
             {
+               this.reopenTimer.stop();
                this.onMenuClosed();
+            }
+            else
+            {
+               if(this.typeData != null)
+               {
+                  this.visitModes[mode] = true;
+               }
+               if(this.closedModes[mode] == true)
+               {
+                  this.reopenTimer.reset();
+                  this.reopenTimer.start();
+               }
             }
          }
          this.applyStatusVisibility();
          this.refreshPanel();
+      }
+
+      // A menu like the last vendor's opened and no type data or item card came: it is
+      // most likely the same vendor again, whose data the game did not send twice.
+      private function onReopenCheck(e:TimerEvent) : void
+      {
+         try
+         {
+            if(!this.menuOpen() || this.closedModes[this.hudMode] != true)
+            {
+               return;
+            }
+            if(this.typeData == null)
+            {
+               this.rewatch(TYPE_PROVIDER,"menu reopened");
+               if(this.typeData == null)
+               {
+                  return;
+               }
+               this.rewatch(OFFERS_PROVIDER,"menu reopened");
+               this.rewatch(INVENTORY_PROVIDER,"menu reopened");
+            }
+            if(this.cardHandle == 0)
+            {
+               this.rewatch(CARD_PROVIDER,"menu reopened");
+            }
+            this.refreshPanel();
+         }
+         catch(error:Error)
+         {
+            this.addError("reopen check: " + error.message);
+         }
       }
 
       private function updateStatus() : void

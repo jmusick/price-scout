@@ -167,6 +167,9 @@ To purge everything, with the game closed: run `tools\bcfeed.py remove` first (i
   when the provider signals an update without a list, and when the highlighted item is not
   in its lists. A list already seen at a different vendor is never recorded again (lists
   are identified by their items' `serverHandleID`s).
+- Reopening the same vendor sends no new `OtherInventoryTypeData` or item card, since
+  neither has changed. When a menu of the kind the last vendor used opens and they are
+  still missing 300 ms later, PriceScout re-creates those watches too and reads them again.
 - The highlighted item comes from `InventoryItemCardData` (its `serverHandleID`); open
   menus from `HUDModeData`.
 - Items are keyed `name|level|stars`, the key Better Containers uses for its remembered
