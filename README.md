@@ -8,6 +8,9 @@ and suggests prices for selling your own.
   players' shops, that shop's best deals.
 - Feeds suggested prices into Better Containers, so its Vendor manager starts from them.
 
+Download it from [Nexus Mods](https://www.nexusmods.com/fallout76/mods/4555) or the
+[GitHub Releases](https://github.com/jmusick/price-scout/releases).
+
 ## Requirements
 
 - [xScal](https://www.nexusmods.com/fallout76/mods/4183), for saving data (`modStorage`)
